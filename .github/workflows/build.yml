@@ -1,0 +1,123 @@
+name: Build Lavender Kernel (KernelSU-Next + SUSFS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "Kernel source (owner/repo)"
+        default: "lavenderOSS/kernel_xiaomi_sdm660-4.19"
+      kernel_branch:
+        description: "Kernel branch"
+        default: "main"
+      defconfig:
+        description: "Defconfig"
+        default: "lavender_defconfig"
+      ksu_branch:
+        description: "KernelSU-Next branch"
+        default: "next"
+      enable_susfs:
+        description: "Try to apply SUSFS patch"
+        type: boolean
+        default: true
+      susfs_branch:
+        description: "susfs4ksu branch (GitLab)"
+        default: "kernel-4.19"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
+            cpio zip curl git python3 ccache lz4 xz-utils
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
+            "https://github.com/${{ inputs.kernel_repo }}" kernel
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)' kernel/Makefile | head -3
+
+      - name: Clone clang toolchain
+        run: git clone --depth 1 https://github.com/kdrag0n/proton-clang clang
+
+      - name: Add KernelSU-Next
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${{ inputs.ksu_branch }}/kernel/setup.sh" \
+            | bash -s "${{ inputs.ksu_branch }}"
+          echo "KernelSU dir:"; ls -la drivers/kernelsu || true
+
+      - name: Try SUSFS patch
+        id: susfs
+        if: ${{ inputs.enable_susfs }}
+        working-directory: kernel
+        continue-on-error: true
+        run: |
+          git clone --depth 1 -b "${{ inputs.susfs_branch }}" \
+            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs
+          grep -rn 'SUSFS_VERSION' ../susfs/kernel_patches/include/linux/susfs.h || true
+          cp -v ../susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+          cp -v ../susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+          PATCH=$(ls ../susfs/kernel_patches/50_add_susfs_in_kernel-*.patch | head -1)
+          echo "Using $PATCH"
+          patch -p1 --dry-run < "$PATCH"      # fails the step if it does not fit
+          patch -p1 < "$PATCH"
+          echo "applied=1" >> "$GITHUB_OUTPUT"
+
+      - name: Configure and build
+        working-directory: kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64 SUBARCH=arm64
+          ARGS="O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
+          make $ARGS "${{ inputs.defconfig }}"
+
+          # KernelSU-Next needs kprobes on 4.19
+          scripts/config --file out/.config \
+            -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS \
+            -e OVERLAY_FS
+          if [ "${{ steps.susfs.outputs.applied }}" = "1" ]; then
+            scripts/config --file out/.config \
+              -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_KSTAT \
+              -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_ENABLE_LOG
+          else
+            echo "::warning::SUSFS was NOT applied - building KernelSU only"
+          fi
+          make $ARGS olddefconfig
+          make $ARGS -j"$(nproc)" 2>&1 | tee build.log | tail -n 40
+
+      - name: Collect Image.gz-dtb
+        working-directory: kernel
+        run: |
+          B=out/arch/arm64/boot
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          if [ -f "$B/Image.gz-dtb" ]; then
+            cp "$B/Image.gz-dtb" "$GITHUB_WORKSPACE/out/Image.gz-dtb"
+          else
+            cat "$B/Image.gz" $(find "$B/dts" -name '*lavender*.dtb' -o -name '*sdm660*.dtb' | sort) \
+              > "$GITHUB_WORKSPACE/out/Image.gz-dtb"
+          fi
+          ls -lh "$GITHUB_WORKSPACE/out"
+
+      - name: Pack AnyKernel3 zip
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3 ak3
+          cd ak3
+          cp "$GITHUB_WORKSPACE/out/Image.gz-dtb" .
+          sed -i 's/^kernel.string=.*/kernel.string=Lavender KSU-Next kernel/' anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
+          zip -r9 "$GITHUB_WORKSPACE/out/lavender-ksu-kernel.zip" . -x '.git*' '*.md'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lavender-kernel
+          path: |
+            out/Image.gz-dtb
+            out/lavender-ksu-kernel.zip
+            kernel/build.log
+            
