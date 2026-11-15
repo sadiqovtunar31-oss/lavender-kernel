@@ -93,7 +93,13 @@ jobs:
             echo "::warning::SUSFS was NOT applied - building KernelSU only"
           fi
           make $ARGS olddefconfig
-          make $ARGS -j"$(nproc)" 2>&1 | tee build.log | tail -n 40
+          make $ARGS -j"$(nproc)" > build.log 2>&1 || {
+            echo "=== BUILD FAILED - error lines ==="
+            grep -n -E "error:|Error [0-9]|\*\*\*|undefined reference|fatal" build.log | head -60
+            echo "=== last 30 lines ==="
+            tail -n 30 build.log
+            exit 1
+          }
 
       - name: Collect Image.gz-dtb
         working-directory: kernel
@@ -120,6 +126,7 @@ jobs:
           zip -r9 "$GITHUB_WORKSPACE/out/lavender-ksu-kernel.zip" . -x '.git*' '*.md'
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lavender-kernel
