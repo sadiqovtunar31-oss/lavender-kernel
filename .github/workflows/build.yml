@@ -66,9 +66,16 @@ jobs:
           patch -p1 < "$PATCH"
           echo "applied=1" >> "$GITHUB_OUTPUT"
 
+      - name: Strip Polly flags
+        working-directory: kernel
+        run: |
+          grep -rl "polly" --include='Makefile*' --include='*.mk' . | xargs -r sed -i -E 's/-mllvm[[:space:]]+-polly[^[:space:]]*//g'
+          grep -rn "polly" --include='Makefile*' . || echo "polly removed"
+
       - name: Configure and build
         working-directory: kernel
         run: |
+          set -o pipefail
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64 SUBARCH=arm64
           ARGS="O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
