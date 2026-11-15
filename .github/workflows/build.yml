@@ -49,6 +49,14 @@ jobs:
             | bash -s "${{ inputs.ksu_branch }}"
           echo "KernelSU dir:"; ls -la drivers/kernelsu || true
 
+      - name: Add pgtable.h shim (4.19 has no linux/pgtable.h)
+        working-directory: kernel
+        run: |
+          if [ ! -f include/linux/pgtable.h ]; then
+            printf '#ifndef _LINUX_PGTABLE_H\n#define _LINUX_PGTABLE_H\n#include <asm/pgtable.h>\n#endif\n' > include/linux/pgtable.h
+          fi
+          ls -l include/linux/pgtable.h
+
       - name: Try SUSFS patch
         id: susfs
         if: ${{ inputs.enable_susfs }}
