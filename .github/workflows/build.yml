@@ -13,12 +13,12 @@ on:
         description: "Defconfig"
         default: "lavender_defconfig"
       ksu_branch:
-        description: "KernelSU-Next branch"
-        default: "next"
+        description: "KernelSU-Next branch (legacy = old kernels like 4.19)"
+        default: "legacy"
       enable_susfs:
-        description: "Try to apply SUSFS patch"
+        description: "Try to apply SUSFS patch (leave off for the first build)"
         type: boolean
-        default: true
+        default: false
       susfs_branch:
         description: "susfs4ksu branch (GitLab)"
         default: "kernel-4.19"
@@ -48,6 +48,13 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${{ inputs.ksu_branch }}/kernel/setup.sh" \
             | bash -s "${{ inputs.ksu_branch }}"
           echo "KernelSU dir:"; ls -la drivers/kernelsu || true
+
+      - name: Patch KernelSU-Next for 4.19 (no tracepoint prio API)
+        working-directory: kernel
+        run: |
+          sed -i 's/register_trace_prio_sys_enter(ksu_sys_enter_handler, NULL, INT_MIN)/register_trace_sys_enter(ksu_sys_enter_handler, NULL)/' \
+            drivers/kernelsu/hook/hook_manager.c
+          grep -n 'register_trace' drivers/kernelsu/hook/hook_manager.c
 
       - name: Add pgtable.h shim (4.19 has no linux/pgtable.h)
         working-directory: kernel
@@ -142,4 +149,4 @@ jobs:
             out/Image.gz-dtb
             out/lavender-ksu-kernel.zip
             kernel/build.log
-           
+            
