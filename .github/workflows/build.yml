@@ -12,6 +12,10 @@ on:
       defconfig:
         description: "Defconfig"
         default: "lavender_defconfig"
+      enable_ksu:
+        description: "Add KernelSU-Next (turn OFF to test that the base kernel boots)"
+        type: boolean
+        default: true
       ksu_branch:
         description: "KernelSU-Next branch (legacy = old kernels like 4.19)"
         default: "legacy"
@@ -43,6 +47,7 @@ jobs:
         run: git clone --depth 1 https://github.com/kdrag0n/proton-clang clang
 
       - name: Add KernelSU-Next
+        if: ${{ inputs.enable_ksu }}
         working-directory: kernel
         run: |
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${{ inputs.ksu_branch }}/kernel/setup.sh" \
@@ -50,6 +55,7 @@ jobs:
           echo "KernelSU dir:"; ls -la drivers/kernelsu || true
 
       - name: Patch KernelSU-Next for 4.19 (no tracepoint prio API)
+        if: ${{ inputs.enable_ksu }}
         working-directory: kernel
         run: |
           sed -i 's/register_trace_prio_sys_enter(ksu_sys_enter_handler, NULL, INT_MIN)/register_trace_sys_enter(ksu_sys_enter_handler, NULL)/' \
@@ -97,9 +103,11 @@ jobs:
           make $ARGS "${{ inputs.defconfig }}"
 
           # KernelSU-Next on a non-GKI 4.19 kernel: syscall table hook mode
-          scripts/config --file out/.config \
-            -e KSU -d KSU_MANUAL_HOOK -e KSU_SYSCALL_TABLE_HOOK \
-            -e OVERLAY_FS
+          if [ "${{ inputs.enable_ksu }}" = "true" ]; then
+            scripts/config --file out/.config \
+              -e KSU -d KSU_MANUAL_HOOK -e KSU_SYSCALL_TABLE_HOOK \
+              -e OVERLAY_FS
+          fi
           if [ "${{ steps.susfs.outputs.applied }}" = "1" ]; then
             scripts/config --file out/.config \
               -e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_KSTAT \
@@ -109,7 +117,9 @@ jobs:
           fi
           make $ARGS olddefconfig
           grep -E "CONFIG_KSU" out/.config
-          grep -q "^CONFIG_KSU_SYSCALL_TABLE_HOOK=y" out/.config || { echo "::error::KSU hook mode not enabled"; exit 1; }
+          if [ "${{ inputs.enable_ksu }}" = "true" ]; then
+            grep -q "^CONFIG_KSU_SYSCALL_TABLE_HOOK=y" out/.config || { echo "::error::KSU hook mode not enabled"; exit 1; }
+          fi
           make $ARGS -j"$(nproc)" > build.log 2>&1 || {
             echo "=== BUILD FAILED - error lines ==="
             grep -n -E "error:|Error [0-9]|\*\*\*|undefined reference|fatal" build.log | head -60
@@ -136,11 +146,33 @@ jobs:
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3 ak3
           cd ak3
           cp "$GITHUB_WORKSPACE/out/Image.gz-dtb" .
-          sed -i 's/^kernel.string=.*/kernel.string=Lavender KSU-Next kernel/' anykernel.sh
-          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
-          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
-          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/' anykernel.sh
-          zip -r9 "$GITHUB_WORKSPACE/out/lavender-ksu-kernel.zip" . -x '.git*' '*.md'
+          cat > anykernel.sh <<'EOF'
+          properties() { '
+          kernel.string=Lavender custom kernel
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lavender
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          EOF
+          if [ "${{ inputs.enable_ksu }}" = "true" ]; then NAME=lavender-ksu-kernel; else NAME=lavender-base-kernel; fi
+          zip -r9 "$GITHUB_WORKSPACE/out/$NAME.zip" . -x '.git*' '*.md'
 
       - name: Upload artifacts
         if: always()
@@ -149,6 +181,6 @@ jobs:
           name: lavender-kernel
           path: |
             out/Image.gz-dtb
-            out/lavender-ksu-kernel.zip
+            out/*.zip
             kernel/build.log
             
