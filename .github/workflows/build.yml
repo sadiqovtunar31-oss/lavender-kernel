@@ -116,7 +116,7 @@ jobs:
             echo "::warning::SUSFS was NOT applied - building KernelSU only"
           fi
           make $ARGS olddefconfig
-          grep -E "CONFIG_KSU" out/.config
+          grep -E "CONFIG_KSU" out/.config || true
           if [ "${{ inputs.enable_ksu }}" = "true" ]; then
             grep -q "^CONFIG_KSU_SYSCALL_TABLE_HOOK=y" out/.config || { echo "::error::KSU hook mode not enabled"; exit 1; }
           fi
